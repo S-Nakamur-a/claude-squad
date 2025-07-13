@@ -9,14 +9,16 @@ import (
 
 // BranchInfo contains information about a Git branch
 type BranchInfo struct {
-	Name      string
-	IsCurrent bool
-	IsRemote  bool
+	Name           string
+	IsCurrent      bool
+	IsRemote       bool
+	LastCommitTime string // Relative time of last commit (e.g., "2 hours ago")
 }
 
-// ListLocalBranches returns a list of local branches
+// ListLocalBranches returns a list of local branches sorted by last commit time
 func (g *GitWorktree) ListLocalBranches() ([]BranchInfo, error) {
-	output, err := g.runGitCommand(g.repoPath, "branch", "--format=%(refname:short)%09%(HEAD)")
+	// Use git for-each-ref to get branches sorted by committer date
+	output, err := g.runGitCommand(g.repoPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)%09%(committerdate:relative)", "refs/heads/")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list local branches: %w", err)
 	}
@@ -28,21 +30,29 @@ func (g *GitWorktree) ListLocalBranches() ([]BranchInfo, error) {
 			continue
 		}
 		parts := strings.Split(line, "\t")
-		if len(parts) != 2 {
+		if len(parts) < 2 {
 			continue
 		}
+		
+		lastCommitTime := ""
+		if len(parts) >= 3 {
+			lastCommitTime = parts[2]
+		}
+		
 		branches = append(branches, BranchInfo{
-			Name:      parts[0],
-			IsCurrent: parts[1] == "*",
-			IsRemote:  false,
+			Name:           parts[0],
+			IsCurrent:      parts[1] == "*",
+			IsRemote:       false,
+			LastCommitTime: lastCommitTime,
 		})
 	}
 	return branches, nil
 }
 
-// ListRemoteBranches returns a list of remote branches
+// ListRemoteBranches returns a list of remote branches sorted by last commit time
 func (g *GitWorktree) ListRemoteBranches() ([]BranchInfo, error) {
-	output, err := g.runGitCommand(g.repoPath, "branch", "-r", "--format=%(refname:short)")
+	// Use git for-each-ref to get remote branches sorted by committer date
+	output, err := g.runGitCommand(g.repoPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(committerdate:relative)", "refs/remotes/")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list remote branches: %w", err)
 	}
@@ -50,14 +60,29 @@ func (g *GitWorktree) ListRemoteBranches() ([]BranchInfo, error) {
 	var branches []BranchInfo
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.Contains(line, "HEAD") {
+		if line == "" {
 			continue
 		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 1 {
+			continue
+		}
+		
+		branchName := strings.TrimSpace(parts[0])
+		if branchName == "" || strings.Contains(branchName, "HEAD") {
+			continue
+		}
+		
+		lastCommitTime := ""
+		if len(parts) >= 2 {
+			lastCommitTime = parts[1]
+		}
+		
 		branches = append(branches, BranchInfo{
-			Name:      line,
-			IsCurrent: false,
-			IsRemote:  true,
+			Name:           branchName,
+			IsCurrent:      false,
+			IsRemote:       true,
+			LastCommitTime: lastCommitTime,
 		})
 	}
 	return branches, nil

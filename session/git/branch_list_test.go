@@ -63,11 +63,12 @@ func TestListLocalBranches(t *testing.T) {
 	// Verify we have the expected branches
 	assert.Len(t, localBranches, 4) // main + 3 created branches
 	
-	// Check branch names
+	// Check branch names and that LastCommitTime is populated
 	branchNames := make(map[string]bool)
 	for _, branch := range localBranches {
 		branchNames[branch.Name] = true
 		assert.False(t, branch.IsRemote)
+		assert.NotEmpty(t, branch.LastCommitTime, "Branch %s should have LastCommitTime", branch.Name)
 	}
 	
 	assert.True(t, branchNames["main"])
