@@ -42,6 +42,8 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
+	// stateBranchSelect is the state when the user is selecting a branch.
+	stateBranchSelect
 )
 
 type home struct {
@@ -91,6 +93,8 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+	// branchSelectorOverlay displays branch selection
+	branchSelectorOverlay *overlay.BranchSelector
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -161,6 +165,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	}
 	if m.textOverlay != nil {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
+	}
+	if m.branchSelectorOverlay != nil {
+		m.branchSelectorOverlay.SetSize(msg.Width, msg.Height)
 	}
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
@@ -305,6 +312,26 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	if m.state == stateHelp {
 		return m.handleHelpState(msg)
+	}
+
+	if m.state == stateBranchSelect {
+		// Handle branch selector
+		if m.branchSelectorOverlay != nil {
+			var branchCmd tea.Cmd
+			model, cmd := m.branchSelectorOverlay.Update(msg)
+			branchCmd = cmd
+			m.branchSelectorOverlay = model.(*overlay.BranchSelector)
+
+			// Check if selection was made or cancelled
+			if m.branchSelectorOverlay.Submitted || m.branchSelectorOverlay.Canceled {
+				m.state = stateDefault
+				m.branchSelectorOverlay = nil
+				return m, tea.Batch(branchCmd, m.instanceChanged())
+			}
+
+			return m, branchCmd
+		}
+		return m, nil
 	}
 
 	if m.state == stateNew {
@@ -507,6 +534,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.menu.SetState(ui.StateNewInstance)
 
 		return m, nil
+	case keys.KeyLocalBranch:
+		return m.handleBranchSelection(false)
+	case keys.KeyRemoteBranch:
+		return m.handleBranchSelection(true)
 	case keys.KeyUp:
 		m.list.Up()
 		return m, m.instanceChanged()
@@ -746,7 +777,76 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	} else if m.state == stateBranchSelect {
+		if m.branchSelectorOverlay == nil {
+			log.ErrorLog.Printf("branch selector overlay is nil")
+		}
+		return m.branchSelectorOverlay.View()
 	}
 
 	return mainView
+}
+
+func (m *home) handleBranchSelection(isRemote bool) (tea.Model, tea.Cmd) {
+	// Check instance limit
+	if m.list.NumInstances() >= GlobalInstanceLimit {
+		return m, m.handleError(
+			fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
+	}
+
+	// Create a temporary git worktree to list branches
+	tempWorktree, _, err := session.GetTempWorktreeForBranchListing(".")
+	if err != nil {
+		return m, m.handleError(fmt.Errorf("failed to access git repository: %w", err))
+	}
+
+	// Get branch list
+	var branches []session.BranchInfo
+	if isRemote {
+		branches, err = tempWorktree.ListRemoteBranches()
+	} else {
+		branches, err = tempWorktree.ListLocalBranches()
+	}
+
+	if err != nil {
+		return m, m.handleError(fmt.Errorf("failed to list branches: %w", err))
+	}
+
+	if len(branches) == 0 {
+		branchType := "local"
+		if isRemote {
+			branchType = "remote"
+		}
+		return m, m.handleError(fmt.Errorf("no %s branches found", branchType))
+	}
+
+	// Create branch selector overlay
+	m.branchSelectorOverlay = overlay.NewBranchSelector(branches, isRemote, func(branch session.BranchInfo) {
+		// Create instance from selected branch
+		instance, err := session.NewInstanceFromBranch(session.BranchInstanceOptions{
+			Branch:  branch,
+			Path:    ".",
+			Program: m.program,
+			AutoYes: m.autoYes,
+		})
+		if err != nil {
+			m.handleError(err)
+			return
+		}
+
+		// Start the instance
+		if err := instance.StartFromBranch(branch); err != nil {
+			m.handleError(err)
+			return
+		}
+
+		// Add to list and save
+		m.list.AddInstance(instance)()
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			m.handleError(err)
+		}
+	})
+
+	m.state = stateBranchSelect
+	return m, nil
 }

@@ -5,6 +5,7 @@ import (
 	"claude-squad/log"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -99,4 +100,46 @@ func (g *GitWorktree) GetRepoName() string {
 // GetBaseCommitSHA returns the base commit SHA for the worktree
 func (g *GitWorktree) GetBaseCommitSHA() string {
 	return g.baseCommitSHA
+}
+
+// NewGitWorktreeForBranch creates a new GitWorktree for an existing branch
+func NewGitWorktreeForBranch(repoPath string, branchName string) (*GitWorktree, error) {
+	// Convert repoPath to absolute path
+	absPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		log.ErrorLog.Printf("git worktree path abs error, falling back to repoPath %s: %s", repoPath, err)
+		// If we can't get absolute path, use original path as fallback
+		absPath = repoPath
+	}
+
+	repoPath, err = findGitRepoRoot(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	worktreeDir, err := getWorktreeDirectory()
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract a sanitized name from the branch for the worktree path
+	sanitizedName := branchName
+	if strings.Contains(branchName, "/") {
+		parts := strings.Split(branchName, "/")
+		// Remove remote prefix if present
+		if len(parts) > 1 && (parts[0] == "origin" || parts[0] == "upstream") {
+			sanitizedName = strings.Join(parts[1:], "-")
+		}
+	}
+	sanitizedName = sanitizeBranchName(sanitizedName)
+
+	worktreePath := filepath.Join(worktreeDir, sanitizedName)
+	worktreePath = worktreePath + "_" + fmt.Sprintf("%x", time.Now().UnixNano())
+
+	return &GitWorktree{
+		repoPath:     repoPath,
+		sessionName:  sanitizedName, // Use sanitized branch name as session name
+		branchName:   branchName,
+		worktreePath: worktreePath,
+	}, nil
 }
